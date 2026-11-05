@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Remote Web Browser Proxy</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="/socket.io/socket.io.js"></script>
+</head>
+<body>
+
+  <!-- Top Control Bar -->
+  <header class="browser-header">
+    <div class="status-indicator" id="status-badge">Disconnected</div>
+    <form id="url-form" class="url-container">
+      <input 
+        type="text" 
+        id="url-input" 
+        placeholder="Enter website URL (e.g. example.com)" 
+        required 
+        autocomplete="off"
+      />
+      <button type="submit" id="go-btn">Go</button>
+    </form>
+  </header>
+
+  <!-- Display Viewport Area -->
+  <main class="viewport-wrapper">
+    <div id="viewport-container" tabindex="0">
+      <div id="placeholder-notice">
+        Enter a URL above to start remote browsing session.
+      </div>
+      <img id="remote-screen" alt="Remote Page" style="display: none;" />
+    </div>
+  </main>
+
+  <!-- External Link Navigation Warning Modal -->
+  <div id="external-modal" class="modal-overlay hidden">
+    <div class="modal-box">
+      <h3>External Website Warning</h3>
+      <p>The page is trying to navigate to a different website:</p>
+      <div class="url-display" id="external-url-text"></div>
+      <p>Would you like to open this link in a new tab in your browser?</p>
+      <div class="modal-actions">
+        <button id="modal-cancel-btn" class="btn-secondary">Cancel</button>
+        <button id="modal-confirm-btn" class="btn-primary">Yes, Open in New Tab</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
