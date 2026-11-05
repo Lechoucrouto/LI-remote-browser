@@ -77,6 +77,23 @@ body {
   background-color: #3a56d4;
 }
 
+/* Fullscreen Toggle Button */
+#fullscreen-btn {
+  padding: 8px 14px;
+  background-color: #3a3a4c;
+  color: white;
+  border: 1px solid #444456;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: bold;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+#fullscreen-btn:hover {
+  background-color: #4a4a5e;
+}
+
 /* Viewport Area */
 .viewport-wrapper {
   flex: 1;
@@ -102,6 +119,16 @@ body {
   outline: none;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
   cursor: crosshair;
+}
+
+#viewport-container:fullscreen {
+  max-width: 100vw;
+  max-height: 100vh;
+  width: 100vw;
+  height: 100vh;
+  border-radius: 0;
+  padding: 0;
+  background-color: #000;
 }
 
 #placeholder-notice {

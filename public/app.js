@@ -3,6 +3,7 @@ const socket = io();
 const statusBadge = document.getElementById('status-badge');
 const urlForm = document.getElementById('url-form');
 const urlInput = document.getElementById('url-input');
+const fullscreenBtn = document.getElementById('fullscreen-btn');
 const viewportContainer = document.getElementById('viewport-container');
 const remoteScreen = document.getElementById('remote-screen');
 const placeholderNotice = document.getElementById('placeholder-notice');
@@ -17,7 +18,7 @@ let pendingExternalUrl = null;
 const SERVER_VIEWPORT_WIDTH = 1280;
 const SERVER_VIEWPORT_HEIGHT = 800;
 
-// Update status badge UI
+// Socket connection status
 socket.on('connect', () => {
   statusBadge.textContent = 'Connected';
   statusBadge.className = 'status-indicator connected';
@@ -28,7 +29,7 @@ socket.on('disconnect', () => {
   statusBadge.className = 'status-indicator';
 });
 
-// Handle incoming frame rendering (~1s or after interaction)
+// Incoming frame rendering
 socket.on('frame_update', ({ image, url }) => {
   placeholderNotice.style.display = 'none';
   remoteScreen.style.display = 'block';
@@ -43,7 +44,7 @@ socket.on('url_changed', ({ url }) => {
   urlInput.value = url;
 });
 
-// Handle External Domain Navigations
+// External Domain Navigations Modal
 socket.on('external_navigation', ({ url }) => {
   pendingExternalUrl = url;
   externalUrlText.textContent = url;
@@ -57,14 +58,13 @@ modalCancelBtn.addEventListener('click', () => {
 
 modalConfirmBtn.addEventListener('click', () => {
   if (pendingExternalUrl) {
-    // Opens external link in a new tab in the client's actual browser
     window.open(pendingExternalUrl, '_blank');
     pendingExternalUrl = null;
   }
   externalModal.classList.add('hidden');
 });
 
-// Handle URL Submission
+// Submit target URL
 urlForm.addEventListener('submit', (e) => {
   e.preventDefault();
   const targetUrl = urlInput.value.trim();
@@ -73,6 +73,25 @@ urlForm.addEventListener('submit', (e) => {
     statusBadge.className = 'status-indicator loading';
     socket.emit('start_session', { targetUrl });
     viewportContainer.focus();
+  }
+});
+
+// Fullscreen toggle logic
+fullscreenBtn.addEventListener('click', () => {
+  if (!document.fullscreenElement) {
+    viewportContainer.requestFullscreen().catch((err) => {
+      console.error(`Error attempting to enable fullscreen: ${err.message}`);
+    });
+  } else {
+    document.exitFullscreen();
+  }
+});
+
+document.addEventListener('fullscreenchange', () => {
+  if (document.fullscreenElement) {
+    fullscreenBtn.textContent = 'Exit Fullscreen';
+  } else {
+    fullscreenBtn.textContent = '⛶ Fullscreen';
   }
 });
 
@@ -90,12 +109,10 @@ remoteScreen.addEventListener('click', (e) => {
   socket.emit('user_click', { x: clickX, y: clickY });
 });
 
-// Keypress Event Forwarding (when viewport container has focus)
+// Keypress Event Forwarding
 viewportContainer.addEventListener('keydown', (e) => {
-  // Ignore typing inside top address input
   if (document.activeElement === urlInput) return;
 
-  // Prevent default scroll actions for keys like spacebar or arrows
   if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab', 'Backspace'].includes(e.code)) {
     e.preventDefault();
   }
