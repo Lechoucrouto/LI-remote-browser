@@ -1,7 +1,7 @@
 {
-  "name": "li-remote-browser",
+  "name": "remote-browser-proxy",
   "version": "1.0.0",
-  "description": "A kind of remote browser, but not the kind youre thinking of.",
+  "description": "Interactive Remote Browser Web Proxy",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"

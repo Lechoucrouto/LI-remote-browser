@@ -10,7 +10,7 @@ const io = new Server(server);
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Minimum delay between frame captures (50ms = up to 20 FPS)
+// Minimum frame interval delay (50ms cap = up to 20 FPS max)
 const MIN_FRAME_INTERVAL_MS = 50;
 
 function getHostname(urlStr) {
@@ -55,7 +55,7 @@ io.on('connection', (socket) => {
 
   sessions.set(socket.id, session);
 
-  // Helper to send frame update
+  // Send raw binary frame screenshot
   const sendFrame = async () => {
     if (!session.page || session.page.isClosed() || session.isCapturing) return;
     session.isCapturing = true;
@@ -63,12 +63,14 @@ io.on('connection', (socket) => {
     try {
       const screenshotBuffer = await session.page.screenshot({
         type: 'jpeg',
-        quality: 50, // Slightly reduced quality for faster encoding/transmission
+        quality: 40, // Compressed for faster CPU encoding & transfer
         optimizeForSpeed: true
       });
       const currentUrl = session.page.url();
+
+      // Emit raw binary buffer directly (bypassing slow Base64 string encoding)
       socket.emit('frame_update', {
-        image: screenshotBuffer.toString('base64'),
+        image: screenshotBuffer,
         url: currentUrl
       });
     } catch (err) {
@@ -78,7 +80,7 @@ io.on('connection', (socket) => {
     }
   };
 
-  // High-frequency frame loop with minimum 50ms floor
+  // Adaptive recursive loop targeting max performance with 50ms delay floor
   const startFrameLoop = async () => {
     if (!session.isActive || !session.page || session.page.isClosed()) return;
 
@@ -86,7 +88,6 @@ io.on('connection', (socket) => {
     await sendFrame();
     const elapsedTime = Date.now() - startTime;
 
-    // Calculate delay needed to honor the 50ms threshold
     const waitTime = Math.max(0, MIN_FRAME_INTERVAL_MS - elapsedTime);
 
     if (session.isActive) {
@@ -94,7 +95,7 @@ io.on('connection', (socket) => {
     }
   };
 
-  // Start navigation session
+  // Start remote browser session
   socket.on('start_session', async ({ targetUrl }) => {
     try {
       let formattedUrl = targetUrl;
@@ -105,12 +106,12 @@ io.on('connection', (socket) => {
       session.initialUrl = formattedUrl;
       session.initialDomain = getHostname(formattedUrl);
 
-      // Stop existing loop and close browser if re-navigating
       if (session.loopTimeoutId) clearTimeout(session.loopTimeoutId);
       if (session.browser) {
         await session.browser.close();
       }
 
+      // Performance-optimized headless browser launch flags
       session.browser = await puppeteer.launch({
         headless: true,
         executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null,
@@ -119,14 +120,28 @@ io.on('connection', (socket) => {
           '--disable-setuid-sandbox',
           '--disable-dev-shm-usage',
           '--disable-accelerated-2d-canvas',
-          '--disable-gpu'
+          '--disable-gpu',
+          '--disable-background-networking',
+          '--disable-background-timer-throttling',
+          '--disable-backgrounding-occluded-windows',
+          '--disable-breakpad',
+          '--disable-component-extensions-with-background-pages',
+          '--disable-extensions',
+          '--disable-features=Translate,BackForwardCache,AcceptCHFrame,MediaRouter,OptimizationHints',
+          '--disable-ipc-flooding-protection',
+          '--disable-renderer-backgrounding',
+          '--force-color-profile=srgb',
+          '--metrics-recording-only',
+          '--mute-audio',
+          '--no-first-run'
         ]
       });
 
       session.page = await session.browser.newPage();
-      await session.page.setViewport({ width: 1280, height: 800 });
+      // Viewport set to 1024x640 for faster capture throughput
+      await session.page.setViewport({ width: 1024, height: 640 });
 
-      // Handle popup tabs
+      // Detect new popups / tab creation
       session.browser.on('targetcreated', async (target) => {
         if (target.type() === 'page') {
           const newPage = await target.page();
@@ -142,7 +157,7 @@ io.on('connection', (socket) => {
         }
       });
 
-      // Handle in-page frame navigations
+      // Detect main frame domain changes
       session.page.on('framenavigated', async (frame) => {
         if (frame === session.page.mainFrame()) {
           const newUrl = frame.url();
@@ -164,7 +179,7 @@ io.on('connection', (socket) => {
         timeout: 30000
       });
 
-      // Kick off continuous capture loop
+      // Start capture loop
       startFrameLoop();
 
     } catch (err) {

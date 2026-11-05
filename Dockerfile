@@ -1,4 +1,3 @@
-# Use official lightweight Node.js base image
 FROM node:20-slim
 
 # Install system dependencies required by Chromium/Puppeteer
@@ -20,7 +19,7 @@ ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
 WORKDIR /usr/src/app
 
 COPY package*.json ./
-RUN npm ci --only=production
+RUN npm install --omit=dev
 
 COPY . .
 

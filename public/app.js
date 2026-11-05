@@ -15,10 +15,13 @@ const modalCancelBtn = document.getElementById('modal-cancel-btn');
 const modalConfirmBtn = document.getElementById('modal-confirm-btn');
 
 let pendingExternalUrl = null;
-const SERVER_VIEWPORT_WIDTH = 1280;
-const SERVER_VIEWPORT_HEIGHT = 800;
+let currentObjectUrl = null;
 
-// Socket connection status
+// Target backend viewport resolution
+const SERVER_VIEWPORT_WIDTH = 1024;
+const SERVER_VIEWPORT_HEIGHT = 640;
+
+// Socket connection status UI
 socket.on('connect', () => {
   statusBadge.textContent = 'Connected';
   statusBadge.className = 'status-indicator connected';
@@ -29,11 +32,20 @@ socket.on('disconnect', () => {
   statusBadge.className = 'status-indicator';
 });
 
-// Incoming frame rendering
+// Fast Binary Buffer Image Renderer
 socket.on('frame_update', ({ image, url }) => {
   placeholderNotice.style.display = 'none';
   remoteScreen.style.display = 'block';
-  remoteScreen.src = `data:image/jpeg;base64,${image}`;
+
+  // Revoke previous Blob URL to prevent client browser memory leaks
+  if (currentObjectUrl) {
+    URL.revokeObjectURL(currentObjectUrl);
+  }
+
+  // Render raw binary ArrayBuffer via Blob URL
+  const blob = new Blob([image], { type: 'image/jpeg' });
+  currentObjectUrl = URL.createObjectURL(blob);
+  remoteScreen.src = currentObjectUrl;
 
   if (document.activeElement !== urlInput) {
     urlInput.value = url;
@@ -99,7 +111,7 @@ document.addEventListener('fullscreenchange', () => {
 remoteScreen.addEventListener('click', (e) => {
   const rect = remoteScreen.getBoundingClientRect();
   
-  // Translate screen click to 1280x800 Puppeteer viewport coordinates
+  // Translate screen click to 1024x640 backend viewport coordinates
   const scaleX = SERVER_VIEWPORT_WIDTH / rect.width;
   const scaleY = SERVER_VIEWPORT_HEIGHT / rect.height;
 
