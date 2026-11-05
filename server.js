@@ -10,7 +10,9 @@ const io = new Server(server);
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Helper to extract root domain/host for comparison
+// Minimum delay between frame captures (50ms = up to 20 FPS)
+const MIN_FRAME_INTERVAL_MS = 50;
+
 function getHostname(urlStr) {
   try {
     const parsed = new URL(urlStr);
@@ -36,7 +38,6 @@ function isSameDomain(url1, url2) {
   return getBaseDomain(host1) === getBaseDomain(host2);
 }
 
-// Active user sessions map
 const sessions = new Map();
 
 io.on('connection', (socket) => {
@@ -45,10 +46,11 @@ io.on('connection', (socket) => {
   let session = {
     browser: null,
     page: null,
-    intervalId: null,
+    loopTimeoutId: null,
     initialUrl: null,
     initialDomain: null,
-    isCapturing: false
+    isCapturing: false,
+    isActive: true
   };
 
   sessions.set(socket.id, session);
@@ -61,7 +63,7 @@ io.on('connection', (socket) => {
     try {
       const screenshotBuffer = await session.page.screenshot({
         type: 'jpeg',
-        quality: 60,
+        quality: 50, // Slightly reduced quality for faster encoding/transmission
         optimizeForSpeed: true
       });
       const currentUrl = session.page.url();
@@ -76,10 +78,25 @@ io.on('connection', (socket) => {
     }
   };
 
+  // High-frequency frame loop with minimum 50ms floor
+  const startFrameLoop = async () => {
+    if (!session.isActive || !session.page || session.page.isClosed()) return;
+
+    const startTime = Date.now();
+    await sendFrame();
+    const elapsedTime = Date.now() - startTime;
+
+    // Calculate delay needed to honor the 50ms threshold
+    const waitTime = Math.max(0, MIN_FRAME_INTERVAL_MS - elapsedTime);
+
+    if (session.isActive) {
+      session.loopTimeoutId = setTimeout(startFrameLoop, waitTime);
+    }
+  };
+
   // Start navigation session
   socket.on('start_session', async ({ targetUrl }) => {
     try {
-      // Ensure scheme exists
       let formattedUrl = targetUrl;
       if (!/^https?:\/\//i.test(formattedUrl)) {
         formattedUrl = 'https://' + formattedUrl;
@@ -88,13 +105,12 @@ io.on('connection', (socket) => {
       session.initialUrl = formattedUrl;
       session.initialDomain = getHostname(formattedUrl);
 
-      // Close existing browser if re-navigating
+      // Stop existing loop and close browser if re-navigating
+      if (session.loopTimeoutId) clearTimeout(session.loopTimeoutId);
       if (session.browser) {
-        clearInterval(session.intervalId);
         await session.browser.close();
       }
 
-      // Launch headless Chrome
       session.browser = await puppeteer.launch({
         headless: true,
         executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null,
@@ -110,7 +126,7 @@ io.on('connection', (socket) => {
       session.page = await session.browser.newPage();
       await session.page.setViewport({ width: 1280, height: 800 });
 
-      // Handle popup tabs (target="_blank" or window.open)
+      // Handle popup tabs
       session.browser.on('targetcreated', async (target) => {
         if (target.type() === 'page') {
           const newPage = await target.page();
@@ -132,10 +148,8 @@ io.on('connection', (socket) => {
           const newUrl = frame.url();
           if (!newUrl || newUrl === 'about:blank') return;
 
-          // Check if navigated to different website entirely
           if (!isSameDomain(newUrl, session.initialUrl)) {
             socket.emit('external_navigation', { url: newUrl });
-            // Revert browser back to allowed session URL
             try {
               await session.page.goBack();
             } catch (e) {}
@@ -145,18 +159,13 @@ io.on('connection', (socket) => {
         }
       });
 
-      // Navigate to site
       await session.page.goto(formattedUrl, {
         waitUntil: 'domcontentloaded',
         timeout: 30000
       });
 
-      // Start 1-second background refresh loop
-      if (session.intervalId) clearInterval(session.intervalId);
-      session.intervalId = setInterval(sendFrame, 1000);
-
-      // Initial immediate frame capture
-      await sendFrame();
+      // Kick off continuous capture loop
+      startFrameLoop();
 
     } catch (err) {
       console.error(`[Session Error] ${err.message}`);
@@ -169,8 +178,6 @@ io.on('connection', (socket) => {
     if (session.page && !session.page.isClosed()) {
       try {
         await session.page.mouse.click(x, y);
-        // Instant snapshot after click action
-        setTimeout(sendFrame, 150);
       } catch (err) {
         console.error(`[Click Error] ${err.message}`);
       }
@@ -182,8 +189,6 @@ io.on('connection', (socket) => {
     if (session.page && !session.page.isClosed()) {
       try {
         await session.page.keyboard.press(key);
-        // Instant snapshot after keypress
-        setTimeout(sendFrame, 100);
       } catch (err) {
         console.error(`[Key Error] ${err.message}`);
       }
@@ -195,17 +200,17 @@ io.on('connection', (socket) => {
     if (session.page && !session.page.isClosed()) {
       try {
         await session.page.mouse.wheel({ deltaY });
-        setTimeout(sendFrame, 150);
       } catch (err) {
         console.error(`[Scroll Error] ${err.message}`);
       }
     }
   });
 
-  // Clean up resources on client disconnect
+  // Clean up resources on disconnect
   socket.on('disconnect', async () => {
     console.log(`[Socket] Client disconnected: ${socket.id}`);
-    if (session.intervalId) clearInterval(session.intervalId);
+    session.isActive = false;
+    if (session.loopTimeoutId) clearTimeout(session.loopTimeoutId);
     if (session.browser) {
       try {
         await session.browser.close();
