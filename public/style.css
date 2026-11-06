@@ -136,12 +136,12 @@ body {
   font-size: 16px;
 }
 
-#remote-video {
+#remote-screen {
   width: 100%;
   height: 100%;
   object-fit: contain;
   user-select: none;
-  pointer-events: auto;
+  -webkit-user-drag: none;
 }
 
 /* External Link Modal Popup */

@@ -3,7 +3,6 @@ const http = require('http');
 const { Server } = require('socket.io');
 const puppeteer = require('puppeteer');
 const path = require('path');
-const { spawn } = require('child_process');
 
 const app = express();
 const server = http.createServer(app);
@@ -45,7 +44,6 @@ io.on('connection', (socket) => {
     browser: null,
     page: null,
     cdpSession: null,
-    ffmpeg: null,
     initialUrl: null,
     initialDomain: null
   };
@@ -60,14 +58,6 @@ io.on('connection', (socket) => {
       session.cdpSession = null;
     }
 
-    if (session.ffmpeg) {
-      try {
-        session.ffmpeg.stdin.end();
-        session.ffmpeg.kill('SIGKILL');
-      } catch (e) {}
-      session.ffmpeg = null;
-    }
-
     if (session.browser) {
       try {
         await session.browser.close();
@@ -76,7 +66,6 @@ io.on('connection', (socket) => {
     }
   };
 
-  // Start navigation and video streaming session
   socket.on('start_session', async ({ targetUrl }) => {
     try {
       let formattedUrl = targetUrl;
@@ -89,7 +78,6 @@ io.on('connection', (socket) => {
 
       await cleanupSession();
 
-      // Launch headless browser
       session.browser = await puppeteer.launch({
         headless: true,
         executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null,
@@ -154,45 +142,27 @@ io.on('connection', (socket) => {
         timeout: 30000
       });
 
-      // Spawn FFmpeg to convert incoming frames into VP8 WebM live video stream
-      session.ffmpeg = spawn('ffmpeg', [
-        '-f', 'image2pipe',
-        '-vcodec', 'mjpeg',
-        '-r', '20',
-        '-i', '-',
-        '-f', 'webm',
-        '-vcodec', 'vp8',
-        '-b:v', '1M',
-        '-g', '10',
-        '-deadline', 'realtime',
-        '-cpu-used', '8',
-        '-an',
-        '-'
-      ]);
-
-      session.ffmpeg.stdout.on('data', (chunk) => {
-        socket.emit('video_chunk', chunk);
-      });
-
-      // Attach CDP session for direct screen output capture
+      // Attach CDP screencast session for low-latency hardware stream
       session.cdpSession = await session.page.target().createCDPSession();
       await session.cdpSession.send('Page.startScreencast', {
         format: 'jpeg',
-        quality: 45,
+        quality: 55,
+        maxWidth: 1024,
+        maxHeight: 640,
         everyNthFrame: 1
       });
 
       session.cdpSession.on('Page.screencastFrame', async (frame) => {
         try {
-          if (session.ffmpeg && !session.ffmpeg.killed && session.ffmpeg.stdin.writable) {
-            const buffer = Buffer.from(frame.data, 'base64');
-            session.ffmpeg.stdin.write(buffer);
-          }
+          socket.emit('frame_update', {
+            base64Image: frame.data,
+            url: session.page.url()
+          });
+
+          // Acknowledge frame to receive the next frame immediately
           await session.cdpSession.send('Page.screencastFrameAck', { sessionId: frame.sessionId });
         } catch (err) {}
       });
-
-      socket.emit('stream_started');
 
     } catch (err) {
       console.error(`[Session Error] ${err.message}`);

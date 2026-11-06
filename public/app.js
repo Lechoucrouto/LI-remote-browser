@@ -5,7 +5,7 @@ const urlForm = document.getElementById('url-form');
 const urlInput = document.getElementById('url-input');
 const fullscreenBtn = document.getElementById('fullscreen-btn');
 const viewportContainer = document.getElementById('viewport-container');
-const remoteVideo = document.getElementById('remote-video');
+const remoteScreen = document.getElementById('remote-screen');
 const placeholderNotice = document.getElementById('placeholder-notice');
 
 // Modal Elements
@@ -15,10 +15,6 @@ const modalCancelBtn = document.getElementById('modal-cancel-btn');
 const modalConfirmBtn = document.getElementById('modal-confirm-btn');
 
 let pendingExternalUrl = null;
-let currentObjectUrl = null;
-let mediaSource = null;
-let sourceBuffer = null;
-let chunkQueue = [];
 
 const SERVER_VIEWPORT_WIDTH = 1024;
 const SERVER_VIEWPORT_HEIGHT = 640;
@@ -34,54 +30,14 @@ socket.on('disconnect', () => {
   statusBadge.className = 'status-indicator';
 });
 
-// Initialize MediaSource API for live WebM video streaming
-function resetMediaSource() {
-  if (currentObjectUrl) {
-    URL.revokeObjectURL(currentObjectUrl);
-  }
-
-  chunkQueue = [];
-  mediaSource = new MediaSource();
-  currentObjectUrl = URL.createObjectURL(mediaSource);
-  remoteVideo.src = currentObjectUrl;
-
-  mediaSource.addEventListener('sourceopen', () => {
-    try {
-      sourceBuffer = mediaSource.addSourceBuffer('video/webm; codecs="vp8"');
-      sourceBuffer.mode = 'sequence';
-      sourceBuffer.addEventListener('updateend', () => {
-        if (chunkQueue.length > 0 && !sourceBuffer.updating) {
-          sourceBuffer.appendBuffer(chunkQueue.shift());
-        }
-      });
-    } catch (e) {
-      console.error('Failed to create SourceBuffer:', e);
-    }
-  });
-}
-
-socket.on('stream_started', () => {
+// Render incoming CDP screencast frames
+socket.on('frame_update', ({ base64Image, url }) => {
   placeholderNotice.style.display = 'none';
-  remoteVideo.style.display = 'block';
-  statusBadge.textContent = 'Connected';
-  statusBadge.className = 'status-indicator connected';
-});
+  remoteScreen.style.display = 'block';
+  remoteScreen.src = 'data:image/jpeg;base64,' + base64Image;
 
-// Append incoming WebM binary stream chunks directly to MediaSource
-socket.on('video_chunk', (data) => {
-  const chunk = new Uint8Array(data).buffer;
-
-  if (sourceBuffer && !sourceBuffer.updating) {
-    try {
-      sourceBuffer.appendBuffer(chunk);
-      if (remoteVideo.paused) {
-        remoteVideo.play().catch(() => {});
-      }
-    } catch (e) {
-      console.error('Error appending buffer chunk:', e);
-    }
-  } else {
-    chunkQueue.push(chunk);
+  if (document.activeElement !== urlInput) {
+    urlInput.value = url;
   }
 });
 
@@ -116,7 +72,6 @@ urlForm.addEventListener('submit', (e) => {
   if (targetUrl) {
     statusBadge.textContent = 'Loading Page...';
     statusBadge.className = 'status-indicator loading';
-    resetMediaSource();
     socket.emit('start_session', { targetUrl });
     viewportContainer.focus();
   }
@@ -141,9 +96,9 @@ document.addEventListener('fullscreenchange', () => {
   }
 });
 
-// Mouse Click Event Forwarding on Video Element
-remoteVideo.addEventListener('click', (e) => {
-  const rect = remoteVideo.getBoundingClientRect();
+// Mouse Click Event Forwarding
+remoteScreen.addEventListener('click', (e) => {
+  const rect = remoteScreen.getBoundingClientRect();
   
   const scaleX = SERVER_VIEWPORT_WIDTH / rect.width;
   const scaleY = SERVER_VIEWPORT_HEIGHT / rect.height;
@@ -166,7 +121,7 @@ viewportContainer.addEventListener('keydown', (e) => {
 });
 
 // Wheel Scroll Event Forwarding
-remoteVideo.addEventListener('wheel', (e) => {
+remoteScreen.addEventListener('wheel', (e) => {
   e.preventDefault();
   socket.emit('user_scroll', { deltaY: e.deltaY });
 }, { passive: false });
