@@ -1,8 +1,9 @@
 FROM node:20-slim
 
-# Install system dependencies required by Chromium/Puppeteer
+# Install system dependencies required by Chromium, Puppeteer, and FFmpeg
 RUN apt-get update && apt-get install -y \
     chromium \
+    ffmpeg \
     fonts-ipafont-gothic \
     fonts-wqy-zenhei \
     fonts-thai-tlwg \

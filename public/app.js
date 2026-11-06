@@ -5,7 +5,7 @@ const urlForm = document.getElementById('url-form');
 const urlInput = document.getElementById('url-input');
 const fullscreenBtn = document.getElementById('fullscreen-btn');
 const viewportContainer = document.getElementById('viewport-container');
-const remoteScreen = document.getElementById('remote-screen');
+const remoteVideo = document.getElementById('remote-video');
 const placeholderNotice = document.getElementById('placeholder-notice');
 
 // Modal Elements
@@ -16,8 +16,10 @@ const modalConfirmBtn = document.getElementById('modal-confirm-btn');
 
 let pendingExternalUrl = null;
 let currentObjectUrl = null;
+let mediaSource = null;
+let sourceBuffer = null;
+let chunkQueue = [];
 
-// Target backend viewport resolution
 const SERVER_VIEWPORT_WIDTH = 1024;
 const SERVER_VIEWPORT_HEIGHT = 640;
 
@@ -32,23 +34,54 @@ socket.on('disconnect', () => {
   statusBadge.className = 'status-indicator';
 });
 
-// Fast Binary Buffer Image Renderer
-socket.on('frame_update', ({ image, url }) => {
-  placeholderNotice.style.display = 'none';
-  remoteScreen.style.display = 'block';
-
-  // Revoke previous Blob URL to prevent client browser memory leaks
+// Initialize MediaSource API for live WebM video streaming
+function resetMediaSource() {
   if (currentObjectUrl) {
     URL.revokeObjectURL(currentObjectUrl);
   }
 
-  // Render raw binary ArrayBuffer via Blob URL
-  const blob = new Blob([image], { type: 'image/jpeg' });
-  currentObjectUrl = URL.createObjectURL(blob);
-  remoteScreen.src = currentObjectUrl;
+  chunkQueue = [];
+  mediaSource = new MediaSource();
+  currentObjectUrl = URL.createObjectURL(mediaSource);
+  remoteVideo.src = currentObjectUrl;
 
-  if (document.activeElement !== urlInput) {
-    urlInput.value = url;
+  mediaSource.addEventListener('sourceopen', () => {
+    try {
+      sourceBuffer = mediaSource.addSourceBuffer('video/webm; codecs="vp8"');
+      sourceBuffer.mode = 'sequence';
+      sourceBuffer.addEventListener('updateend', () => {
+        if (chunkQueue.length > 0 && !sourceBuffer.updating) {
+          sourceBuffer.appendBuffer(chunkQueue.shift());
+        }
+      });
+    } catch (e) {
+      console.error('Failed to create SourceBuffer:', e);
+    }
+  });
+}
+
+socket.on('stream_started', () => {
+  placeholderNotice.style.display = 'none';
+  remoteVideo.style.display = 'block';
+  statusBadge.textContent = 'Connected';
+  statusBadge.className = 'status-indicator connected';
+});
+
+// Append incoming WebM binary stream chunks directly to MediaSource
+socket.on('video_chunk', (data) => {
+  const chunk = new Uint8Array(data).buffer;
+
+  if (sourceBuffer && !sourceBuffer.updating) {
+    try {
+      sourceBuffer.appendBuffer(chunk);
+      if (remoteVideo.paused) {
+        remoteVideo.play().catch(() => {});
+      }
+    } catch (e) {
+      console.error('Error appending buffer chunk:', e);
+    }
+  } else {
+    chunkQueue.push(chunk);
   }
 });
 
@@ -83,6 +116,7 @@ urlForm.addEventListener('submit', (e) => {
   if (targetUrl) {
     statusBadge.textContent = 'Loading Page...';
     statusBadge.className = 'status-indicator loading';
+    resetMediaSource();
     socket.emit('start_session', { targetUrl });
     viewportContainer.focus();
   }
@@ -107,11 +141,10 @@ document.addEventListener('fullscreenchange', () => {
   }
 });
 
-// Mouse Click Event Forwarding
-remoteScreen.addEventListener('click', (e) => {
-  const rect = remoteScreen.getBoundingClientRect();
+// Mouse Click Event Forwarding on Video Element
+remoteVideo.addEventListener('click', (e) => {
+  const rect = remoteVideo.getBoundingClientRect();
   
-  // Translate screen click to 1024x640 backend viewport coordinates
   const scaleX = SERVER_VIEWPORT_WIDTH / rect.width;
   const scaleY = SERVER_VIEWPORT_HEIGHT / rect.height;
 
@@ -133,7 +166,7 @@ viewportContainer.addEventListener('keydown', (e) => {
 });
 
 // Wheel Scroll Event Forwarding
-remoteScreen.addEventListener('wheel', (e) => {
+remoteVideo.addEventListener('wheel', (e) => {
   e.preventDefault();
   socket.emit('user_scroll', { deltaY: e.deltaY });
 }, { passive: false });

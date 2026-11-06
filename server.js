@@ -3,15 +3,13 @@ const http = require('http');
 const { Server } = require('socket.io');
 const puppeteer = require('puppeteer');
 const path = require('path');
+const { spawn } = require('child_process');
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
 app.use(express.static(path.join(__dirname, 'public')));
-
-// Minimum frame interval delay (50ms cap = up to 20 FPS max)
-const MIN_FRAME_INTERVAL_MS = 50;
 
 function getHostname(urlStr) {
   try {
@@ -46,56 +44,39 @@ io.on('connection', (socket) => {
   let session = {
     browser: null,
     page: null,
-    loopTimeoutId: null,
+    cdpSession: null,
+    ffmpeg: null,
     initialUrl: null,
-    initialDomain: null,
-    isCapturing: false,
-    isActive: true
+    initialDomain: null
   };
 
   sessions.set(socket.id, session);
 
-  // Send raw binary frame screenshot
-  const sendFrame = async () => {
-    if (!session.page || session.page.isClosed() || session.isCapturing) return;
-    session.isCapturing = true;
+  const cleanupSession = async () => {
+    if (session.cdpSession) {
+      try {
+        await session.cdpSession.send('Page.stopScreencast');
+      } catch (e) {}
+      session.cdpSession = null;
+    }
 
-    try {
-      const screenshotBuffer = await session.page.screenshot({
-        type: 'jpeg',
-        quality: 40, // Compressed for faster CPU encoding & transfer
-        optimizeForSpeed: true
-      });
-      const currentUrl = session.page.url();
+    if (session.ffmpeg) {
+      try {
+        session.ffmpeg.stdin.end();
+        session.ffmpeg.kill('SIGKILL');
+      } catch (e) {}
+      session.ffmpeg = null;
+    }
 
-      // Emit raw binary buffer directly (bypassing slow Base64 string encoding)
-      socket.emit('frame_update', {
-        image: screenshotBuffer,
-        url: currentUrl
-      });
-    } catch (err) {
-      console.error(`[Error] Frame capture failed: ${err.message}`);
-    } finally {
-      session.isCapturing = false;
+    if (session.browser) {
+      try {
+        await session.browser.close();
+      } catch (e) {}
+      session.browser = null;
     }
   };
 
-  // Adaptive recursive loop targeting max performance with 50ms delay floor
-  const startFrameLoop = async () => {
-    if (!session.isActive || !session.page || session.page.isClosed()) return;
-
-    const startTime = Date.now();
-    await sendFrame();
-    const elapsedTime = Date.now() - startTime;
-
-    const waitTime = Math.max(0, MIN_FRAME_INTERVAL_MS - elapsedTime);
-
-    if (session.isActive) {
-      session.loopTimeoutId = setTimeout(startFrameLoop, waitTime);
-    }
-  };
-
-  // Start remote browser session
+  // Start navigation and video streaming session
   socket.on('start_session', async ({ targetUrl }) => {
     try {
       let formattedUrl = targetUrl;
@@ -106,12 +87,9 @@ io.on('connection', (socket) => {
       session.initialUrl = formattedUrl;
       session.initialDomain = getHostname(formattedUrl);
 
-      if (session.loopTimeoutId) clearTimeout(session.loopTimeoutId);
-      if (session.browser) {
-        await session.browser.close();
-      }
+      await cleanupSession();
 
-      // Performance-optimized headless browser launch flags
+      // Launch headless browser
       session.browser = await puppeteer.launch({
         headless: true,
         executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null,
@@ -127,21 +105,18 @@ io.on('connection', (socket) => {
           '--disable-breakpad',
           '--disable-component-extensions-with-background-pages',
           '--disable-extensions',
-          '--disable-features=Translate,BackForwardCache,AcceptCHFrame,MediaRouter,OptimizationHints',
           '--disable-ipc-flooding-protection',
           '--disable-renderer-backgrounding',
           '--force-color-profile=srgb',
-          '--metrics-recording-only',
           '--mute-audio',
           '--no-first-run'
         ]
       });
 
       session.page = await session.browser.newPage();
-      // Viewport set to 1024x640 for faster capture throughput
       await session.page.setViewport({ width: 1024, height: 640 });
 
-      // Detect new popups / tab creation
+      // Handle popups
       session.browser.on('targetcreated', async (target) => {
         if (target.type() === 'page') {
           const newPage = await target.page();
@@ -157,7 +132,7 @@ io.on('connection', (socket) => {
         }
       });
 
-      // Detect main frame domain changes
+      // Handle domain navigation
       session.page.on('framenavigated', async (frame) => {
         if (frame === session.page.mainFrame()) {
           const newUrl = frame.url();
@@ -179,8 +154,45 @@ io.on('connection', (socket) => {
         timeout: 30000
       });
 
-      // Start capture loop
-      startFrameLoop();
+      // Spawn FFmpeg to convert incoming frames into VP8 WebM live video stream
+      session.ffmpeg = spawn('ffmpeg', [
+        '-f', 'image2pipe',
+        '-vcodec', 'mjpeg',
+        '-r', '20',
+        '-i', '-',
+        '-f', 'webm',
+        '-vcodec', 'vp8',
+        '-b:v', '1M',
+        '-g', '10',
+        '-deadline', 'realtime',
+        '-cpu-used', '8',
+        '-an',
+        '-'
+      ]);
+
+      session.ffmpeg.stdout.on('data', (chunk) => {
+        socket.emit('video_chunk', chunk);
+      });
+
+      // Attach CDP session for direct screen output capture
+      session.cdpSession = await session.page.target().createCDPSession();
+      await session.cdpSession.send('Page.startScreencast', {
+        format: 'jpeg',
+        quality: 45,
+        everyNthFrame: 1
+      });
+
+      session.cdpSession.on('Page.screencastFrame', async (frame) => {
+        try {
+          if (session.ffmpeg && !session.ffmpeg.killed && session.ffmpeg.stdin.writable) {
+            const buffer = Buffer.from(frame.data, 'base64');
+            session.ffmpeg.stdin.write(buffer);
+          }
+          await session.cdpSession.send('Page.screencastFrameAck', { sessionId: frame.sessionId });
+        } catch (err) {}
+      });
+
+      socket.emit('stream_started');
 
     } catch (err) {
       console.error(`[Session Error] ${err.message}`);
@@ -224,13 +236,7 @@ io.on('connection', (socket) => {
   // Clean up resources on disconnect
   socket.on('disconnect', async () => {
     console.log(`[Socket] Client disconnected: ${socket.id}`);
-    session.isActive = false;
-    if (session.loopTimeoutId) clearTimeout(session.loopTimeoutId);
-    if (session.browser) {
-      try {
-        await session.browser.close();
-      } catch (err) {}
-    }
+    await cleanupSession();
     sessions.delete(socket.id);
   });
 });
